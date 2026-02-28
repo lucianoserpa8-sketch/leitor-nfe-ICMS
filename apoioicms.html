@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leitor NF-e - Versão Corrigida</title>
+    <!-- Tesseract mais estável -->
+    <script src='https://unpkg.com/tesseract.js@2.1.1/dist/tesseract.min.js'></script>
+    <script src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.9.359/pdf.min.js'></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+        body { background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { text-align: center; color: #333; margin-bottom: 30px; }
+
+        .card { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .card h2 { color: #667eea; margin-bottom: 15px; border-bottom: 2px solid #667eea; padding-bottom: 10px; }
+
+        .upload-area { 
+            border: 3px dashed #667eea; 
+            border-radius: 10px; 
+            padding: 40px; 
+            text-align: center; 
+            background: #f8f9fa; 
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .upload-area:hover { background: #e3f2fd; }
+
+        #preview { max-width: 100%; max-height: 400px; margin-top: 20px; border: 1px solid #ddd; display: none; }
+
+        .btn { 
+            background: #667eea; 
+            color: white; 
+            border: none; 
+            padding: 15px 30px; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            font-size: 16px; 
+            width: 100%; 
+            margin-top: 10px;
+        }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-success { background: #4caf50; }
+        .btn-danger { background: #f44336; }
+
+        .log { 
+            background: #263238; 
+            color: #aed581; 
+            padding: 15px; 
+            border-radius: 5px; 
+            font-family: monospace; 
+            font-size: 12px; 
+            max-height: 300px; 
+            overflow-y: auto;
+            margin-top: 15px;
+            white-space: pre-wrap;
+        }
+        .log-error { color: #ff5252; }
+        .log-success { color: #69f0ae; }
+        .log-info { color: #82b1ff; }
+        .log-warn { color: #ffd54f; }
+
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+        input, select { 
+            width: 100%; 
+            padding: 10px; 
+            border: 2px solid #ddd; 
+            border-radius: 5px; 
+            font-size: 14px;
+        }
+        input:focus { border-color: #667eea; outline: none; }
+        .filled { background: #e8f5e9; border-color: #4caf50; }
+
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+
+        .status { 
+            padding: 15px; 
+            border-radius: 5px; 
+            margin: 10px 0;
+            display: none;
+        }
+        .status.error { background: #ffebee; color: #c62828; display: block; }
+        .status.success { background: #e8f5e9; color: #2e7d32; display: block; }
+        .status.info { background: #e3f2fd; color: #1565c0; display: block; }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+            display: none;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+<base target="_blank">
+</head>
+<body>
+    <div class="container">
+        <h1>📄 Leitor NF-e - Versão Corrigida</h1>
+
+        <!-- UPLOAD -->
+        <div class="card">
+            <h2>1. Selecionar Arquivo</h2>
+            <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+                <p style="font-size: 2em;">📁</p>
+                <p><strong>Clique aqui</strong> para selecionar PDF ou imagem</p>
+                <p style="color: #666; font-size: 0.9em;">Aceita: PDF, JPG, PNG</p>
+            </div>
+            <input type="file" id="fileInput" accept=".pdf,image/*" style="display: none;">
+
+            <div id="fileInfo" style="margin-top: 15px; padding: 10px; background: #e3f2fd; border-radius: 5px; display: none;"></div>
+
+            <div class="spinner" id="spinner"></div>
+
+            <img id="preview">
+
+            <button class="btn" id="btnProcessar" onclick="processarArquivo()" disabled>
+                🔍 Processar Arquivo
+            </button>
+
+            <div id="statusMsg" class="status"></div>
+        </div>
+
+        <!-- LOG -->
+        <div class="card">
+            <h2>📝 Log</h2>
+            <div id="log" class="log">Pronto. Selecione um arquivo.
+</div>
+            <button class="btn btn-danger" onclick="limparLog()" style="margin-top: 10px;">Limpar Log</button>
+        </div>
+
+        <!-- FORMULÁRIO -->
+        <div class="card">
+            <h2>2. Dados Extraídos</h2>
+            <form id="formNota">
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>Número *</label>
+                        <input type="text" id="numero" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Série</label>
+                        <input type="text" id="serie" value="1">
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>Data Emissão *</label>
+                        <input type="date" id="data_emissao" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Valor Total (R$) *</label>
+                        <input type="number" id="valor_total" step="0.01" required>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>CNPJ Emitente *</label>
+                    <input type="text" id="cnpj_emitente" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Nome Emitente *</label>
+                    <input type="text" id="nome_emitente" required>
+                </div>
+
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>UF Origem *</label>
+                        <select id="uf_emitente" required>
+                            <option value="">Selecione...</option>
+                            <option value="AC">AC</option><option value="AL">AL</option>
+                            <option value="AM">AM</option><option value="AP">AP</option>
+                            <option value="BA">BA</option><option value="CE">CE</option>
+                            <option value="DF">DF</option><option value="ES">ES</option>
+                            <option value="GO">GO</option><option value="MA">MA</option>
+                            <option value="MG">MG</option><option value="MS">MS</option>
+                            <option value="MT">MT</option><option value="PA">PA</option>
+                            <option value="PB">PB</option><option value="PE">PE</option>
+                            <option value="PI">PI</option><option value="PR">PR</option>
+                            <option value="RJ">RJ</option><option value="RN">RN</option>
+                            <option value="RO">RO</option><option value="RR">RR</option>
+                            <option value="RS">RS</option><option value="SC">SC</option>
+                            <option value="SE">SE</option><option value="SP">SP</option>
+                            <option value="TO">TO</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>UF Destino *</label>
+                        <select id="uf_destinatario" required>
+                            <option value="">Selecione...</option>
+                            <option value="AC">AC</option><option value="AL">AL</option>
+                            <option value="AM">AM</option><option value="AP">AP</option>
+                            <option value="BA">BA</option><option value="CE">CE</option>
+                            <option value="DF">DF</option><option value="ES">ES</option>
+                            <option value="GO">GO</option><option value="MA">MA</option>
+                            <option value="MG">MG</option><option value="MS">MS</option>
+                            <option value="MT">MT</option><option value="PA">PA</option>
+                            <option value="PB">PB</option><option value="PE">PE</option>
+                            <option value="PI">PI</option><option value="PR">PR</option>
+                            <option value="RJ">RJ</option><option value="RN">RN</option>
+                            <option value="RO">RO</option><option value="RR">RR</option>
+                            <option value="RS">RS</option><option value="SC">SC</option>
+                            <option value="SE">SE</option><option value="SP">SP</option>
+                            <option value="TO">TO</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>CNPJ Destinatário *</label>
+                    <input type="text" id="cnpj_destinatario" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Nome Destinatário *</label>
+                    <input type="text" id="nome_destinatario" required>
+                </div>
+
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>CFOP *</label>
+                        <select id="cfop" required>
+                            <option value="">Selecione...</option>
+                            <option value="1101">1101 - Compra</option>
+                            <option value="1102">1102 - Compra industrialização</option>
+                            <option value="2101">2101 - Compra interestadual</option>
+                            <option value="5101">5101 - Venda dentro estado</option>
+                            <option value="5102">5102 - Venda fora estado</option>
+                            <option value="6101">6101 - Venda interestadual</option>
+                            <option value="6102">6102 - Venda interestadual</option>
+                            <option value="5949">5949 - Remessa</option>
+                            <option value="6949">6949 - Remessa interestadual</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Tipo *</label>
+                        <select id="tipo_operacao" required>
+                            <option value="Saída">Saída (Venda)</option>
+                            <option value="Entrada">Entrada (Compra)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>ICMS Base (R$)</label>
+                        <input type="number" id="icms_base" step="0.01">
+                    </div>
+                    <div class="form-group">
+                        <label>ICMS Valor (R$)</label>
+                        <input type="number" id="icms_valor" step="0.01">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Chave de Acesso</label>
+                    <input type="text" id="chave_acesso" maxlength="44">
+                </div>
+
+                <button type="submit" class="btn btn-success">➕ Adicionar Nota</button>
+            </form>
+        </div>
+
+        <!-- NOTAS -->
+        <div class="card">
+            <h2>3. Notas (<span id="countNotas">0</span>)</h2>
+            <div id="listaNotas"></div>
+            <button class="btn" onclick="analisarTudo()" id="btnAnalisar" disabled style="margin-top: 15px;">
+                📊 Analisar ICMS
+            </button>
+        </div>
+
+        <!-- RESULTADO -->
+        <div id="resultado" class="card" style="display: none;">
+            <h2>📈 Resultado</h2>
+            <div id="conteudoResultado"></div>
+        </div>
+    </div>
+
+    <script>
+        // Configurar PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.9.359/pdf.worker.min.js';
+
+        let arquivoAtual = null;
+        let tipoArquivo = null;
+        let imagemDataUrl = null;
+        let notas = [];
+
+        function log(msg, tipo = 'info') {
+            const logEl = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            let className = 'log-info';
+            if (tipo === 'error') className = 'log-error';
+            if (tipo === 'success') className = 'log-success';
+            if (tipo === 'warn') className = 'log-warn';
+
+            logEl.innerHTML += `[${time}] <span class="${className}">${msg}</span>\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+            console.log(`[${tipo}] ${msg}`);
+        }
+
+        function limparLog() {
+            document.getElementById('log').innerHTML = 'Log limpo.\n';
+        }
+
+        function showStatus(msg, tipo) {
+            const el = document.getElementById('statusMsg');
+            el.textContent = msg;
+            el.className = 'status ' + tipo;
+        }
+
+        function showSpinner(show) {
+            document.getElementById('spinner').style.display = show ? 'block' : 'none';
+        }
+
+        // UPLOAD
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            log(`Arquivo: ${file.name} (${(file.size/1024).toFixed(1)} KB)`);
+
+            if (file.size > 10 * 1024 * 1024) {
+                log('ERRO: Arquivo muito grande', 'error');
+                showStatus('Máximo 10MB', 'error');
+                return;
+            }
+
+            const isPDF = file.type === 'application/pdf';
+            const isImage = file.type.startsWith('image/');
+
+            if (!isPDF && !isImage) {
+                log('ERRO: Tipo inválido', 'error');
+                showStatus('Use PDF ou imagem', 'error');
+                return;
+            }
+
+            arquivoAtual = file;
+            tipoArquivo = isPDF ? 'pdf' : 'imagem';
+
+            document.getElementById('fileInfo').style.display = 'block';
+            document.getElementById('fileInfo').innerHTML = `<strong>${file.name}</strong> (${tipoArquivo})`;
+
+            if (isImage) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    imagemDataUrl = e.target.result;
+                    document.getElementById('preview').src = imagemDataUrl;
+                    document.getElementById('preview').style.display = 'block';
+                    document.getElementById('btnProcessar').disabled = false;
+                    log('Imagem OK', 'success');
+                };
+                reader.readAsDataURL(file);
+            } else {
+                document.getElementById('preview').style.display = 'none';
+                document.getElementById('btnProcessar').disabled = false;
+                log('PDF OK - clique Processar', 'info');
+            }
+        }
+
+        // PROCESSAR
+        async function processarArquivo() {
+            if (!arquivoAtual) return;
+
+            document.getElementById('btnProcessar').disabled = true;
+            showSpinner(true);
+            log('Iniciando...', 'info');
+
+            try {
+                // PDF para imagem
+                if (tipoArquivo === 'pdf') {
+                    log('Convertendo PDF...', 'info');
+                    imagemDataUrl = await pdfParaImagem(arquivoAtual);
+                    document.getElementById('preview').src = imagemDataUrl;
+                    document.getElementById('preview').style.display = 'block';
+                    log('PDF convertido', 'success');
+                }
+
+                // OCR
+                log('Iniciando OCR (pode demorar)...', 'info');
+                const texto = await fazerOCR(imagemDataUrl);
+                log(`Texto extraído: ${texto.length} chars`, 'success');
+
+                // Extrair dados
+                log('Extraindo dados...', 'info');
+                extrairDados(texto);
+                log('Concluído!', 'success');
+                showStatus('Pronto! Revise os dados.', 'success');
+
+            } catch (error) {
+                log(`ERRO: ${error.message}`, 'error');
+                console.error(error);
+                showStatus('Erro: ' + error.message, 'error');
+            } finally {
+                showSpinner(false);
+                document.getElementById('btnProcessar').disabled = false;
+            }
+        }
+
+        async function pdfParaImagem(file) {
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                log(`PDF: ${pdf.numPages} página(s)`, 'info');
+
+                const page = await pdf.getPage(1);
+                const scale = 2.0;
+                const viewport = page.getViewport({ scale });
+
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+                return canvas.toDataURL('image/png');
+            } catch (err) {
+                throw new Error('PDF: ' + err.message);
+            }
+        }
+
+        async function fazerOCR(imageData) {
+            try {
+                log('Criando worker Tesseract...', 'info');
+
+                // Versão mais simples e estável
+                const result = await Tesseract.recognize(
+                    imageData,
+                    'por',
+                    {
+                        logger: m => {
+                            if (m.status === 'recognizing text') {
+                                log(`OCR: ${Math.round(m.progress * 100)}%`, 'info');
+                            }
+                        }
+                    }
+                );
+
+                return result.data.text;
+            } catch (err) {
+                throw new Error('OCR: ' + err.message);
+            }
+        }
+
+        function extrairDados(texto) {
+            log('Analisando texto...', 'info');
+            document.querySelectorAll('.filled').forEach(el => el.classList.remove('filled'));
+
+            // NÚMERO
+            const numMatch = texto.match(/N[°º]?\s*(\d{6,})/i) || 
+                            texto.match(/N[°\.]\s*(\d{3}\.?\d{3})/) ||
+                            texto.match(/(\d{6,})/);
+            if (numMatch) {
+                const num = numMatch[1].replace(/\./g, '');
+                setField('numero', num);
+                log(`Número: ${num}`, 'success');
+            }
+
+            // DATA
+            const dataMatch = texto.match(/(\d{2})[\/\.](\d{2})[\/\.](\d{4})/);
+            if (dataMatch) {
+                setField('data_emissao', `${dataMatch[3]}-${dataMatch[2]}-${dataMatch[1]}`);
+                log('Data OK', 'success');
+            }
+
+            // CNPJ
+            const cnpjs = texto.match(/\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[-\s]?\d{2}/g);
+            if (cnpjs) {
+                const limpos = [...new Set(cnpjs)].map(c => 
+                    c.replace(/[^\d]/g, '').replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5')
+                );
+                if (limpos[0]) setField('cnpj_emitente', limpos[0]);
+                if (limpos[1]) setField('cnpj_destinatario', limpos[1]);
+                log(`CNPJs: ${limpos.length}`, 'success');
+            }
+
+            // VALOR
+            const valorMatch = texto.match(/VALOR\s*TOTAL.*?(\d+[\.,]\d{2})/i) ||
+                              texto.match(/TOTAL.*?R?\$?\s*(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/);
+            if (valorMatch) {
+                const v = valorMatch[1].replace(/\./g, '').replace(',', '.');
+                setField('valor_total', v);
+                setField('icms_base', v);
+                log(`Valor: R$ ${v}`, 'success');
+            }
+
+            // CFOP
+            const cfopMatch = texto.match(/(5\d{3}|6\d{3}|1\d{3}|2\d{3})/);
+            if (cfopMatch) {
+                setField('cfop', cfopMatch[1]);
+                log(`CFOP: ${cfopMatch[1]}`, 'success');
+            }
+
+            // UF
+            const ufs = texto.match(/(AC|AL|AM|AP|BA|CE|DF|ES|GO|MA|MG|MS|MT|PA|PB|PE|PI|PR|RJ|RN|RO|RR|RS|SC|SE|SP|TO)/g);
+            if (ufs && ufs.length >= 2) {
+                setField('uf_emitente', ufs[0]);
+                setField('uf_destinatario', ufs[1]);
+                log(`UFs: ${ufs[0]}→${ufs[1]}`, 'success');
+            }
+
+            // CHAVE
+            const chave = texto.match(/(\d{44})/);
+            if (chave) setField('chave_acesso', chave[1]);
+
+            if (!document.getElementById('icms_aliquota').value) {
+                setField('icms_aliquota', '18.00');
+            }
+        }
+
+        function setField(id, value) {
+            const el = document.getElementById(id);
+            if (el && value) {
+                el.value = value;
+                el.classList.add('filled');
+            }
+        }
+
+        // FORM
+        document.getElementById('formNota').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const nota = {
+                numero: document.getElementById('numero').value,
+                serie: document.getElementById('serie').value,
+                data_emissao: document.getElementById('data_emissao').value,
+                cnpj_emitente: document.getElementById('cnpj_emitente').value,
+                nome_emitente: document.getElementById('nome_emitente').value,
+                uf_emitente: document.getElementById('uf_emitente').value,
+                cnpj_destinatario: document.getElementById('cnpj_destinatario').value,
+                nome_destinatario: document.getElementById('nome_destinatario').value,
+                uf_destinatario: document.getElementById('uf_destinatario').value,
+                valor_total: parseFloat(document.getElementById('valor_total').value) || 0,
+                cfop: document.getElementById('cfop').value,
+                tipo_operacao: document.getElementById('tipo_operacao').value,
+                icms_base: parseFloat(document.getElementById('icms_base').value) || 0,
+                icms_valor: parseFloat(document.getElementById('icms_valor').value) || 0,
+                chave_acesso: document.getElementById('chave_acesso').value
+            };
+
+            notas.push(nota);
+            atualizarLista();
+
+            this.reset();
+            document.querySelectorAll('.filled').forEach(el => el.classList.remove('filled'));
+            document.getElementById('preview').style.display = 'none';
+            document.getElementById('fileInfo').style.display = 'none';
+            arquivoAtual = null;
+            imagemDataUrl = null;
+
+            log('Nota adicionada', 'success');
+        });
+
+        function atualizarLista() {
+            const div = document.getElementById('listaNotas');
+            div.innerHTML = notas.map((n, i) => `
+                <div style="padding: 10px; background: #f5f5f5; margin: 5px 0; border-radius: 5px;">
+                    <strong>Nota ${n.numero}</strong> - ${n.nome_emitente.substring(0,30)}<br>
+                    R$ ${n.valor_total.toFixed(2)} | ${n.uf_emitente}→${n.uf_destinatario} | CFOP ${n.cfop}
+                    <button onclick="notas.splice(${i},1); atualizarLista();" style="float:right; background:#f44336; color:white; border:none; padding:5px 10px; border-radius:3px; cursor:pointer;">×</button>
+                </div>
+            `).join('');
+
+            document.getElementById('countNotas').textContent = notas.length;
+            document.getElementById('btnAnalisar').disabled = notas.length === 0;
+        }
+
+        function analisarTudo() {
+            if (notas.length === 0) return;
+
+            const aliq = {
+                'SP': 18, 'RJ': 20, 'MG': 18, 'ES': 17, 'PR': 18, 'SC': 17, 'RS': 17,
+                'MS': 17, 'MT': 17, 'GO': 17, 'DF': 18, 'BA': 18, 'SE': 18, 'AL': 18,
+                'PE': 18, 'PB': 18, 'RN': 18, 'CE': 18, 'PI': 18, 'MA': 18, 'PA': 17,
+                'AP': 18, 'AM': 18, 'RR': 17, 'AC': 17, 'RO': 17.5, 'TO': 18
+            };
+
+            let html = '<table><tr><th>Nota</th><th>Rota</th><th>Valor</th><th>DIFAL</th></tr>';
+            let total = 0;
+
+            notas.forEach(n => {
+                let difal = 0;
+                if (n.uf_emitente !== n.uf_destinatario && n.cfop.startsWith('6')) {
+                    const inter = ['AM','RR','AP','PA','TO','RO','AC','MA','PI','CE','RN','PB','PE','AL','SE','BA','MT','MS','GO','DF'].includes(n.uf_destinatario) ? 7 : 12;
+                    const dest = aliq[n.uf_destinatario] || 18;
+                    difal = n.valor_total * ((dest - inter) / 100);
+                    total += difal;
+                }
+                html += `<tr><td>${n.numero}</td><td>${n.uf_emitente}→${n.uf_destinatario}</td><td>R$ ${n.valor_total.toFixed(2)}</td><td>R$ ${difal.toFixed(2)}</td></tr>`;
+            });
+
+            html += `</table><p style="margin-top: 15px; font-size: 1.2em;"><strong>Total DIFAL: R$ ${total.toFixed(2)}</strong></p>`;
+
+            document.getElementById('conteudoResultado').innerHTML = html;
+            document.getElementById('resultado').style.display = 'block';
+        }
+    </script>
+</body>
+</html>
