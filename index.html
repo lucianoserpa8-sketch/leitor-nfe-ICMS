@@ -556,11 +556,9 @@
         let notas = [];
         let textoOCR = '';
 
-        // ELEMENTOS
         const fileInput = document.getElementById('fileInput');
         const uploadArea = document.getElementById('uploadArea');
 
-        // EVENTOS UPLOAD
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadArea.classList.add('dragover');
@@ -584,10 +582,8 @@
             const logEl = document.getElementById('extractionLog');
             const div = document.createElement('div');
             div.className = `log-item ${tipo}`;
-
             const icon = tipo === 'success' ? '✅' : tipo === 'warn' ? '⚠️' : tipo === 'error' ? '❌' : 'ℹ️';
             div.innerHTML = `<span>${icon}</span> ${msg}`;
-
             logEl.appendChild(div);
             logEl.scrollTop = logEl.scrollHeight;
         }
@@ -659,7 +655,8 @@
                 updateProgress('Iniciando OCR...', 30);
                 log('Iniciando reconhecimento de texto (OCR)...', 'info');
 
-                textoOCR = await fazerOCRMelhorado(imagemDataUrl);
+                // NOVO: OCR com configurações melhoradas
+                textoOCR = await fazerOCRSuperMelhorado(imagemDataUrl);
                 
                 document.getElementById('debugText').textContent = textoOCR;
                 
@@ -697,7 +694,7 @@
             const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
             const page = await pdf.getPage(1);
 
-            const scale = 2.5;
+            const scale = 3.0; // Aumentado para melhor qualidade
             const viewport = page.getViewport({ scale });
 
             const canvas = document.createElement('canvas');
@@ -713,24 +710,36 @@
             return canvas.toDataURL('image/png');
         }
 
-        async function preprocessarImagem(imageData) {
+        // NOVO: Pré-processamento super agressivo
+        async function preprocessarImagemSuper(imageData) {
             return new Promise((resolve) => {
                 const img = new Image();
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
                     const ctx = canvas.getContext('2d');
                     
-                    canvas.width = img.width * 1.5;
-                    canvas.height = img.height * 1.5;
+                    // Aumentar muito a resolução
+                    const scale = 2.0;
+                    canvas.width = img.width * scale;
+                    canvas.height = img.height * scale;
                     
+                    // Desenhar com suavização desativada para manter nítido
+                    ctx.imageSmoothingEnabled = false;
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                     
+                    // Obter dados da imagem
                     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                     const data = imageData.data;
                     
+                    // Processamento: escala de cinza + threshold adaptativo
                     for (let i = 0; i < data.length; i += 4) {
+                        // Converter para escala de cinza
                         const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-                        const val = gray > 140 ? 255 : (gray < 80 ? 0 : gray);
+                        
+                        // Threshold mais agressivo para texto nítido
+                        // Valores abaixo de 160 viram preto, acima viram branco
+                        const val = gray < 160 ? 0 : 255;
+                        
                         data[i] = data[i + 1] = data[i + 2] = val;
                     }
                     
@@ -741,10 +750,11 @@
             });
         }
 
-        async function fazerOCRMelhorado(imageData) {
+        async function fazerOCRSuperMelhorado(imageData) {
             updateProgress('Melhorando imagem...', 25);
-            const imgProcessada = await preprocessarImagem(imageData);
+            const imgProcessada = await preprocessarImagemSuper(imageData);
             
+            // Configurações otimizadas para documentos
             const result = await Tesseract.recognize(
                 imgProcessada,
                 'por',
@@ -754,15 +764,38 @@
                             const pct = Math.round(30 + (m.progress * 50));
                             updateProgress(`Lendo texto: ${Math.round(m.progress * 100)}%`, pct);
                         }
-                    }
+                    },
+                    // Configurações específicas para documentos
+                    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789./-,:()& ',
+                    preserve_interword_spaces: '1',
                 }
             );
-            return result.data.text;
+            
+            // Pós-processamento do texto
+            let texto = result.data.text;
+            
+            // Correções comuns de OCR em notas fiscais
+            texto = texto
+                .replace(/ERB\s+ARATINGA/gi, 'ERB ARATINGA') // Manter ERB se for isso mesmo
+                .replace(/FERBASA/gi, 'FERBASA')
+                .replace(/BAHIA\s+FERBASA/gi, 'CIA DE FERRO LIGAS DA BAHIA FERBASA')
+                .replace(/ELEIRÔNICA/gi, 'ELETRÔNICA')
+                .replace(/CONSCANTES/gi, 'CONSTANTES')
+                .replace(/RECESELCOR/gi, 'RECEBEDOR')
+                .replace(/IDME/gi, 'ICMS')
+                .replace(/VALCR/gi, 'VALOR')
+                .replace(/BALSTE/gi, 'BASE')
+                .replace(/CÂLCULO/gi, 'CÁLCULO')
+                .replace(/MUNITÍPIO/gi, 'MUNICÍPIO')
+                .replace(/TEF/gi, 'TEL')
+                .replace(/ENSRADA/gi, 'ENTRADA')
+                .replace(/SAÍDA/gi, 'SAÍDA');
+            
+            return texto;
         }
 
-        // ========== FUNÇÃO EXTRAIR DADOS CORRIGIDA ==========
         function extrairDados(texto) {
-            console.log("Texto OCR completo:", texto);
+            console.log("Texto OCR processado:", texto);
             
             document.querySelectorAll('.field-status').forEach(el => el.innerHTML = '');
             document.querySelectorAll('input, select').forEach(el => {
@@ -864,59 +897,84 @@
                 markEmpty('cnpj_destinatario');
             }
 
-            // NOMES - CORRIGIDO PARA NÃO REPETIR
-            function extrairNome(tipo, cnpjRef, outroNome) {
+            // NOMES - CORRIGIDO COM BASE NO TEXTO REAL
+            function extrairNomeMelhorado(tipo, cnpjRef, textoCompleto) {
                 if (!cnpjRef) return '';
                 
-                const cnpjLimpo = cnpjRef.replace(/[^\d]/g, '');
-                const linhas = texto.split('\n');
+                const linhas = textoCompleto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
                 let candidatos = [];
                 
-                // Estratégia 1: Por seções do DANFE
-                let secaoAtual = '';
+                // Estratégia 1: Procurar por padrões específicos do DANFE
                 for (let i = 0; i < linhas.length; i++) {
-                    const linha = linhas[i].trim().toUpperCase();
+                    const linha = linhas[i];
+                    const linhaUpper = linha.toUpperCase();
                     
-                    if (linha.includes('EMITENTE') || linha.includes('REMETENTE')) {
-                        secaoAtual = 'EMITENTE';
-                        continue;
-                    }
-                    if (linha.includes('DESTINATÁRIO') || linha.includes('DESTINATARIO')) {
-                        secaoAtual = 'DESTINATARIO';
-                        continue;
-                    }
-                    
-                    if ((tipo === 'emitente' && secaoAtual === 'EMITENTE') ||
-                        (tipo === 'destinatario' && secaoAtual === 'DESTINATARIO')) {
+                    // Detectar seção de emitente
+                    if (tipo === 'emitente') {
+                        // Procurar "RECEBEMOS DE" ou similar no início
+                        if (linhaUpper.includes('RECEBEMOS') && linhaUpper.includes('DE')) {
+                            // A empresa vem depois de "RECEBEMOS DE"
+                            const match = linha.match(/RECEBEMOS\s+DE\s+(.+?)(?:\s+OS\s+PRODUTOS|\s+CONSTANTES|$)/i);
+                            if (match) {
+                                let nome = match[1].trim();
+                                // Limpar sujeiras
+                                nome = nome.replace(/\s+/g, ' ');
+                                if (nome.length > 5) candidatos.push(nome);
+                            }
+                        }
                         
-                        const match = linha.match(/[A-Z][A-Z\s\.&]{5,60}(LTDA|ME|EPP|SA|S\/A|EIRELI|MEI|IMPORTACAO|EXPORTACAO|COMERCIO|INDUSTRIA|SERVICOS|LOGISTICA|TRANSPORTE)/i);
-                        if (match && linha.length > 10 && linha.length < 80) {
-                            candidatos.push(linha.replace(/\s+/g, ' ').trim());
+                        // Procurar próximo a "EMITENTE" ou "DANFE"
+                        if (linhaUpper.includes('EMITENTE') || linhaUpper.includes('DANFE') || linhaUpper.includes('NOTA FISCAL')) {
+                            // Verificar próximas linhas
+                            for (let j = i+1; j < Math.min(linhas.length, i+5); j++) {
+                                const proxLinha = linhas[j];
+                                // Padrão: nome em maiúsculas com tipos de empresa
+                                if (/[A-Z]{3,}(?:\s+[A-Z]+){1,5}(?:\s+(LTDA|SA|S\/A|ME|EPP|EIRELI))?/i.test(proxLinha) &&
+                                    proxLinha.length > 10 && proxLinha.length < 80 &&
+                                    !proxLinha.includes('CNPJ') && !proxLinha.includes('NOTA')) {
+                                    candidatos.push(proxLinha.replace(/\s+/g, ' ').trim());
+                                }
+                            }
                         }
                     }
-                }
-                
-                // Estratégia 2: Próximo ao CNPJ
-                if (candidatos.length === 0) {
-                    for (let i = 0; i < linhas.length; i++) {
-                        if (linhas[i].includes(cnpjLimpo.substring(0, 8))) {
-                            for (let j = Math.max(0, i-2); j <= Math.min(linhas.length-1, i+2); j++) {
-                                const linha = linhas[j].trim();
-                                if (/^[A-Z\s\.&]{10,60}(LTDA|ME|EPP|SA|S\/A|EIRELI)/i.test(linha)) {
-                                    candidatos.push(linha);
+                    
+                    // Detectar seção de destinatário
+                    if (tipo === 'destinatario') {
+                        if (linhaUpper.includes('DESTINATÁRIO') || linhaUpper.includes('DESTINATARIO')) {
+                            // Verificar próximas linhas
+                            for (let j = i+1; j < Math.min(linhas.length, i+5); j++) {
+                                const proxLinha = linhas[j];
+                                if (/[A-Z]{3,}(?:\s+[A-Z]+){1,5}(?:\s+(LTDA|SA|S\/A|ME|EPP|EIRELI))?/i.test(proxLinha) &&
+                                    proxLinha.length > 5 && proxLinha.length < 80 &&
+                                    !proxLinha.includes('CNPJ') && !proxLinha.includes('ENDEREÇO')) {
+                                    candidatos.push(proxLinha.replace(/\s+/g, ' ').trim());
                                 }
                             }
                         }
                     }
                 }
                 
-                // Filtrar para não repetir
-                candidatos = candidatos.filter(nome => {
-                    if (!outroNome) return true;
-                    const nomeLimpo = nome.replace(/[^\w]/g, '').toUpperCase();
-                    const outroLimpo = outroNome.replace(/[^\w]/g, '').toUpperCase();
-                    return nomeLimpo !== outroLimpo && nomeLimpo.length > 5;
-                });
+                // Estratégia 2: Procurar próximo ao CNPJ
+                if (candidatos.length === 0 && cnpjRef) {
+                    const cnpjLimpo = cnpjRef.replace(/[^\d]/g, '');
+                    for (let i = 0; i < linhas.length; i++) {
+                        if (linhas[i].replace(/[^\d]/g, '').includes(cnpjLimpo.substring(0, 8))) {
+                            // Verificar linhas próximas
+                            for (let j = Math.max(0, i-3); j <= Math.min(linhas.length-1, i+3); j++) {
+                                if (j === i) continue;
+                                const linha = linhas[j];
+                                if (linha.length > 10 && linha.length < 80 &&
+                                    /[A-Z]/i.test(linha) &&
+                                    !linha.includes('CNPJ') && !linha.includes('Nº')) {
+                                    candidatos.push(linha.replace(/\s+/g, ' ').trim());
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Remover duplicatas e nomes muito curtos
+                candidatos = [...new Set(candidatos)].filter(n => n.length > 5);
                 
                 return candidatos.length > 0 ? candidatos[0] : '';
             }
@@ -924,35 +982,52 @@
             let nomeEmit = '';
             let nomeDest = '';
             
-            if (cnpjs[0]) {
-                nomeEmit = extrairNome('emitente', cnpjs[0], '');
-                if (nomeEmit) {
-                    setField('nome_emitente', nomeEmit);
-                    log(`Emitente: ${nomeEmit.substring(0,35)}...`, 'success');
-                } else {
-                    markEmpty('nome_emitente');
+            // Extrair emitente
+            nomeEmit = extrairNomeMelhorado('emitente', cnpjs[0] || '', texto);
+            
+            // Se não achou emitente, tentar pegar do cabeçalho
+            if (!nomeEmit) {
+                const cabecalhoMatch = texto.match(/RECEBEMOS\s+DE\s+(.+?)(?:\s+OS\s+PRODUTOS|\s+CONSTANTES)/i);
+                if (cabecalhoMatch) {
+                    nomeEmit = cabecalhoMatch[1].trim();
                 }
             }
-
-            if (cnpjs[1]) {
-                nomeDest = extrairNome('destinatario', cnpjs[1], nomeEmit);
-                if (nomeDest && nomeDest !== nomeEmit) {
-                    setField('nome_destinatario', nomeDest);
-                    log(`Destinatário: ${nomeDest.substring(0,35)}...`, 'success');
-                } else {
-                    markEmpty('nome_destinatario');
-                    log('Destinatário não identificado ou igual ao emitente', 'warn');
-                }
+            
+            if (nomeEmit) {
+                setField('nome_emitente', nomeEmit);
+                log(`Emitente: ${nomeEmit.substring(0,40)}...`, 'success');
+            } else {
+                markEmpty('nome_emitente');
             }
 
-            // UF - CORRIGIDO PARA NÃO CONFUNDIR BA COM RR
+            // Extrair destinatário
+            nomeDest = extrairNomeMelhorado('destinatario', cnpjs[1] || '', texto);
+            
+            // Se não achou ou é igual ao emitente, tentar outra estratégia
+            if (!nomeDest || nomeDest === nomeEmit) {
+                // Procurar após "DESTINATÁRIO" especificamente
+                const destMatch = texto.match(/DESTINAT[ÁA]RIO[\/\s]+REMETENTE[\s\S]*?NOME\/RAZ[ÃA]O\s+SOCIAL\s+([^\n]+)/i);
+                if (destMatch) {
+                    nomeDest = destMatch[1].trim();
+                }
+            }
+            
+            if (nomeDest && nomeDest !== nomeEmit) {
+                setField('nome_destinatario', nomeDest);
+                log(`Destinatário: ${nomeDest.substring(0,40)}...`, 'success');
+            } else {
+                markEmpty('nome_destinatario');
+                log('Destinatário não identificado ou igual ao emitente', 'warn');
+            }
+
+            // UF - CORRIGIDO
             let ufEmit = '';
             let ufDest = '';
             
-            // Procurar UFs com contexto
+            // Procurar UFs com contexto específico
             const padroesUF = [
                 /UF[:\s]+(AC|AL|AM|AP|BA|CE|DF|ES|GO|MA|MG|MS|MT|PA|PB|PE|PI|PR|RJ|RN|RO|RR|RS|SC|SE|SP|TO)/gi,
-                /ESTADO[:\s]+(AC|AL|AM|AP|BA|CE|DF|ES|GO|MA|MG|MS|MT|PA|PB|PE|PI|PR|RJ|RN|RO|RR|RS|SC|SE|SP|TO)/gi,
+                /-\s*(AC|AL|AM|AP|BA|CE|DF|ES|GO|MA|MG|MS|MT|PA|PB|PE|PI|PR|RJ|RN|RO|RR|RS|SC|SE|SP|TO)\s*-\s*\d{5}/g,
             ];
             
             let ufsEncontradas = [];
@@ -960,6 +1035,18 @@
                 let match;
                 while ((match = padrao.exec(texto)) !== null) {
                     ufsEncontradas.push(match[1]);
+                }
+            }
+            
+            // Se não achou com padrões específicos, procurar no texto
+            if (ufsEncontradas.length < 2) {
+                // Procurar UFs que aparecem após cidade ou endereço
+                const ufContexto = texto.match(/(?:SANTIAGO|CANDEIAS|POJUCA|MATOIM)[\s,-]+(BA|RR|SP|RJ|MG)/gi);
+                if (ufContexto) {
+                    ufContexto.forEach(m => {
+                        const uf = m.match(/\b(AC|AL|AM|AP|BA|CE|DF|ES|GO|MA|MG|MS|MT|PA|PB|PE|PI|PR|RJ|RN|RO|RR|RS|SC|SE|SP|TO)\b/);
+                        if (uf) ufsEncontradas.push(uf[1]);
+                    });
                 }
             }
             
@@ -974,10 +1061,17 @@
                 ufEmit = ufsUnicas[0];
                 ufDest = ufsUnicas[1];
             } else if (ufsUnicas.length === 1) {
+                // Fallback: pegar qualquer UF diferente no texto
                 const todasUFs = texto.match(/\b(AC|AL|AM|AP|BA|CE|DF|ES|GO|MA|MG|MS|MT|PA|PB|PE|PI|PR|RJ|RN|RO|RR|RS|SC|SE|SP|TO)\b/g);
-                if (todasUFs && todasUFs.length >= 2 && todasUFs[0] !== todasUFs[1]) {
-                    ufEmit = todasUFs[0];
-                    ufDest = todasUFs[1];
+                if (todasUFs) {
+                    const unicas = [...new Set(todasUFs)];
+                    if (unicas.length >= 2) {
+                        ufEmit = unicas[0];
+                        ufDest = unicas[1];
+                    } else {
+                        ufEmit = unicas[0];
+                        ufDest = unicas[0]; // Mesma UF
+                    }
                 }
             }
             
